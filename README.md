@@ -8,3 +8,9 @@ Python 3.6
 numpy == 1.19.4
 
 torch >= 1.5
+- Python 3.6
+- numpy == 1.19.4
+- pandas == 1.1.1
+- torch >= 1.1
+- mxnet == 1.4.1
+- tensorflow >= 2.4.0
