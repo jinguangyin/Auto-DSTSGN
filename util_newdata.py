@@ -10,82 +10,122 @@ from torch.autograd import Variable
 def normal_std(x):
     return x.std() * np.sqrt((len(x) - 1.)/(len(x)))
 
-class DataLoaderS(object):
-    # train and valid is the ratio of training set and validation set. test = 1 - train - valid
-    def __init__(self, file_name, train, valid, device, horizon, window, normalize=2):
-        self.P = window
-        self.h = horizon
-        fin = open(file_name)
-        self.rawdat = np.loadtxt(fin, delimiter=',')
-        self.dat = np.zeros(self.rawdat.shape)
-        self.n, self.m = self.dat.shape
-        self.normalize = 2
-        self.scale = np.ones(self.m)
-        self._normalized(normalize)
-        self._split(int(train * self.n), int((train + valid) * self.n), self.n)
+def get_adjacency_matrix(distance_df_filename, num_of_vertices,
+                         type_='connectivity', id_filename=None):
+    '''
+    Parameters
+    ----------
+    distance_df_filename: str, path of the csv file contains edges information
 
-        self.scale = torch.from_numpy(self.scale).float()
-        tmp = self.test[1] * self.scale.expand(self.test[1].size(0), self.m)
+    num_of_vertices: int, the number of vertices
 
-        self.scale = self.scale.to(device)
-        self.scale = Variable(self.scale)
+    type_: str, {connectivity, distance}
 
-        self.rse = normal_std(tmp)
-        self.rae = torch.mean(torch.abs(tmp - torch.mean(tmp)))
+    Returns
+    ----------
+    A: np.ndarray, adjacency matrix
 
-        self.device = device
+    '''
+    import csv
 
-    def _normalized(self, normalize):
-        # normalized by the maximum value of entire matrix.
+    A = np.zeros((int(num_of_vertices), int(num_of_vertices)),
+                 dtype=np.float32)
 
-        if (normalize == 0):
-            self.dat = self.rawdat
+    if id_filename:
+        with open(id_filename, 'r') as f:
+            id_dict = {int(i): idx
+                       for idx, i in enumerate(f.read().strip().split('\n'))}
+        with open(distance_df_filename, 'r') as f:
+            f.readline()
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) != 3:
+                    continue
+                i, j, distance = int(row[0]), int(row[1]), float(row[2])
+                A[id_dict[i], id_dict[j]] = 1
+                A[id_dict[j], id_dict[i]] = 1
+        return A
 
-        if (normalize == 1):
-            self.dat = self.rawdat / np.max(self.rawdat)
+    # Fills cells in the matrix with distances.
+    with open(distance_df_filename, 'r') as f:
+        f.readline()
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) != 3:
+                continue
+            i, j, distance = int(row[0]), int(row[1]), float(row[2])
+            if type_ == 'connectivity':
+                A[i, j] = 1
+                A[j, i] = 1
+            elif type == 'distance':
+                A[i, j] = 1 / distance
+                A[j, i] = 1 / distance
+            else:
+                raise ValueError("type_ error, must be "
+                                 "connectivity or distance!")
+    return A
 
-        # normlized by the maximum value of each row(sensor).
-        if (normalize == 2):
-            for i in range(self.m):
-                self.scale[i] = np.max(np.abs(self.rawdat[:, i]))
-                self.dat[:, i] = self.rawdat[:, i] / np.max(np.abs(self.rawdat[:, i]))
 
-    def _split(self, train, valid, test):
+def generate_seq(data, train_length, pred_length):
+    seq = np.concatenate([np.expand_dims(
+        data[i: i + train_length + pred_length], 0)
+        for i in range(data.shape[0] - train_length - pred_length + 1)],
+        axis=0)[:, :, :, 0: 1]
+    return np.split(seq, 2, axis=1)
 
-        train_set = range(self.P + self.h - 1, train)
-        valid_set = range(train, valid)
-        test_set = range(valid, self.n)
-        self.train = self._batchify(train_set, self.h)
-        self.valid = self._batchify(valid_set, self.h)
-        self.test = self._batchify(test_set, self.h)
+def generate_from_train_val_test(data, transformer):
+    mean = None
+    std = None
+    for key in ('train', 'val', 'test'):
+        x, y = generate_seq(data[key], 12, 12)
+        if transformer:
+            x = transformer(x)
+            y = transformer(y)
+        if mean is None:
+            mean = x.mean()
+        if std is None:
+            std = x.std()
+        # yield (x - mean) / std, y
+        yield x, y
 
-    def _batchify(self, idx_set, horizon):
-        n = len(idx_set)
-        X = torch.zeros((n, self.P, self.m))
-        Y = torch.zeros((n, self.m))
-        for i in range(n):
-            end = idx_set[i] - self.h + 1
-            start = end - self.P
-            X[i, :, :] = torch.from_numpy(self.dat[start:end, :])
-            Y[i, :] = torch.from_numpy(self.dat[idx_set[i], :])
-        return [X, Y]
+def generate_from_data(data, length, transformer):
+    mean = None
+    std = None
+    train_line, val_line = int(length * 0.6), int(length * 0.8)
+    for line1, line2 in ((0, train_line),
+                         (train_line, val_line),
+                         (val_line, length)):
+        x, y = generate_seq(data['data'][line1: line2], 12, 12)
+        if transformer:
+            x = transformer(x)
+            y = transformer(y)
+        if mean is None:
+            mean = x.mean()
+        if std is None:
+            std = x.std()
+        # yield (x - mean) / std, y
+        yield x, y
 
-    def get_batches(self, inputs, targets, batch_size, shuffle=True):
-        length = len(inputs)
-        if shuffle:
-            index = torch.randperm(length)
-        else:
-            index = torch.LongTensor(range(length))
-        start_idx = 0
-        while (start_idx < length):
-            end_idx = min(length, start_idx + batch_size)
-            excerpt = index[start_idx:end_idx]
-            X = inputs[excerpt]
-            Y = targets[excerpt]
-            X = X.to(self.device)
-            Y = Y.to(self.device)
-            yield Variable(X), Variable(Y)
-            start_idx += batch_size
+
+def generate_data(graph_signal_matrix_filename, transformer=None):
+    '''
+    shape is (num_of_samples, 12, num_of_vertices, 1)
+    '''
+    data = np.load(graph_signal_matrix_filename)
+    # print(data['data'].shape) #(16992, 307, 3)
+    # sys.exit(0)
+    keys = data.keys()
+    if 'train' in keys and 'val' in keys and 'test' in keys:
+        for i in generate_from_train_val_test(data, transformer):
+            yield i
+    elif 'data' in keys:
+        length = data['data'].shape[0]
+        for i in generate_from_data(data, length, transformer):
+            yield i
+    else:
+        raise KeyError("neither data nor train, val, test is in the data")
+
+
 
 class DataLoaderM(object):
     def __init__(self, xs, ys, batch_size, pad_with_last_sample=True):
@@ -127,51 +167,6 @@ class DataLoaderM(object):
 
         return _wrapper()
 
-class DataLoaderM_new(object):
-    def __init__(self, xs, ys, ycl, batch_size, pad_with_last_sample=True):
-        """
-        :param xs:
-        :param ys:
-        :param batch_size:
-        :param pad_with_last_sample: pad with the last sample to make number of samples divisible to batch_size.
-        """
-        self.batch_size = batch_size
-        self.current_ind = 0
-        if pad_with_last_sample:
-            num_padding = (batch_size - (len(xs) % batch_size)) % batch_size
-            x_padding = np.repeat(xs[-1:], num_padding, axis=0)
-            y_padding = np.repeat(ys[-1:], num_padding, axis=0)
-            ycl_padding = np.repeat(ycl[-1:], num_padding, axis=0)
-            xs = np.concatenate([xs, x_padding], axis=0)
-            ys = np.concatenate([ys, y_padding], axis=0)
-            ycl = np.concatenate([ycl, ycl_padding], axis=0)
-        self.size = len(xs)
-        self.num_batch = int(self.size // self.batch_size)
-        self.xs = xs
-        self.ys = ys
-        self.ycl = ycl
-
-    def shuffle(self):
-        permutation = np.random.permutation(self.size)
-        xs, ys, ycl = self.xs[permutation], self.ys[permutation], self.ycl[permutation]
-        self.xs = xs
-        self.ys = ys
-        self.ycl = ycl
-
-
-    def get_iterator(self):
-        self.current_ind = 0
-        def _wrapper():
-            while self.current_ind < self.num_batch:
-                start_ind = self.batch_size * self.current_ind
-                end_ind = min(self.size, self.batch_size * (self.current_ind + 1))
-                x_i = self.xs[start_ind: end_ind, ...]
-                y_i = self.ys[start_ind: end_ind, ...]
-                y_i_cl = self.ycl[start_ind: end_ind, ...]
-                yield (x_i, y_i, y_i_cl)
-                self.current_ind += 1
-
-        return _wrapper()
 
 class StandardScaler():
     """
@@ -247,52 +242,12 @@ def load_pickle(pickle_file):
         raise
     return pickle_data
 
-# def load_adj(pkl_filename):
-#     sensor_ids, sensor_id_to_ind, adj = load_pickle(pkl_filename)
-#     return adj
 
-
-# def load_dataset(dataset_dir, batch_size, valid_batch_size= None, test_batch_size=None):
-#     data = {}
-#     for category in ['train', 'val', 'test']:
-#         cat_data = np.load(os.path.join(dataset_dir, category + '.npz'))
-#         data['x_' + category] = cat_data['x'].astype(np.float32)
-#         data['y_' + category] = cat_data['y'].astype(np.float32)
-#     scaler = StandardScaler(mean=data['x_train'][..., 0].mean(), std=data['x_train'][..., 0].std())
-#     # Data format
-#     for category in ['train', 'val', 'test']:
-#         data['x_' + category][..., 0] = scaler.transform(data['x_' + category][..., 0])
-
-#     import copy
-#     # data['y_train_cl'] = copy.deepcopy(data['y_train'])[:, :, 0:1, 1:3] #bt12
-#     data['y_train_cl'] = copy.deepcopy(data['y_train'])[:, :, 0:1, -2:] #bt12
-#     # data['y_train_cl'][..., 0] = scaler.transform(data['y_train'][..., 0])
-
-
-#     data['train_loader'] = DataLoaderM_new(data['x_train'], data['y_train'], data['y_train_cl'], batch_size)
-#     data['val_loader'] = DataLoaderM(data['x_val'], data['y_val'], valid_batch_size)
-#     data['test_loader'] = DataLoaderM(data['x_test'], data['y_test'], test_batch_size)
-#     data['scaler'] = scaler
-#     return data
-
-
-
-from utils_4n0_3layer_12T_res import (generate_data,get_adjacency_matrix,
-                       masked_mae_np, masked_mape_np, masked_mse_np)
 import json
-def load_dataset(config_filename, batch_size, valid_batch_size= None, test_batch_size=None, if_causal = False):
+
+def load_dataset(config_filename, batch_size, valid_batch_size= None, test_batch_size=None):
     with open(config_filename, 'r') as f:
         config = json.loads(f.read())
-    
-    # module_type = config['module_type']
-    # act_type = config['act_type']
-    # temporal_emb = config['temporal_emb']
-    # spatial_emb = config['spatial_emb']
-    # use_mask = config['use_mask']
-    # num_of_features = config['num_of_features']
-    # points_per_hour = config['points_per_hour']
-    # num_for_predict = config['num_for_predict']
-    # batch_size = config['batch_size']
 
     num_of_vertices = config['num_of_vertices']
     adj_filename = config['adj_filename']
@@ -303,12 +258,9 @@ def load_dataset(config_filename, batch_size, valid_batch_size= None, test_batch
 
     adj = get_adjacency_matrix(adj_filename, num_of_vertices,
                                id_filename=id_filename)
-    #adj_mx = construct_adj(adj, 3)
+
     adj_dtw = np.array(pd.read_csv(config['adj_dtw_filename'], header=None))
-    #xxx
-    adj_mx = construct_adj_fusion(adj, adj_dtw, 4, if_causal)
-    print("The shape of localized adjacency matrix: {}".format(
-        adj_mx.shape), flush=True)
+
       
     graph_signal_matrix_filename = config['graph_signal_matrix_filename']
         
@@ -316,9 +268,7 @@ def load_dataset(config_filename, batch_size, valid_batch_size= None, test_batch
     data = {}
     for idx, (x, y) in enumerate(generate_data(graph_signal_matrix_filename)):
         category = ['train', 'val', 'test'][idx]
-#     for category in ['train', 'val', 'test']:
-#         cat_data = np.load(os.path.join(dataset_dir, category + '.npz'))
-        data['x_' + category] = x[..., :1].astype(np.float32) #未保留输入的另外几维
+        data['x_' + category] = x[..., :1].astype(np.float32) 
         data['y_' + category] = y[..., :1].astype(np.float32)
         print(x.shape, y.shape)
         # (10172, 12, 307, 1) (10172, 12, 307)
@@ -334,31 +284,13 @@ def load_dataset(config_filename, batch_size, valid_batch_size= None, test_batch
     data['y_train_cl'] = copy.deepcopy(data['y_train'])[:, :, 0:1, -2:] #bt12
     # data['y_train_cl'][..., 0] = scaler.transform(data['y_train'][..., 0])
 
-
-    data['train_loader'] = DataLoaderM_new(data['x_train'], data['y_train'], data['y_train_cl'], batch_size)
+    # data['train_loader'] = DataLoaderM_new(data['x_train'], data['y_train'], data['y_train_cl'], batch_size)
+    data['train_loader'] = DataLoaderM(data['x_train'], data['y_train'], batch_size)
     data['val_loader'] = DataLoaderM(data['x_val'], data['y_val'], valid_batch_size)
     data['test_loader'] = DataLoaderM(data['x_test'], data['y_test'], test_batch_size)
     data['scaler'] = scaler
 #     data['scaler'] = StandardScaler(mean=0, std=1) #不做inverse transform时使用
-    return data, adj_mx, config, num_of_vertices
-
-
-# def load_dataset(dataset_dir, batch_size, valid_batch_size= None, test_batch_size=None):
-#     data = {}
-#     for category in ['train', 'val', 'test']:
-#         cat_data = np.load(os.path.join(dataset_dir, category + '.npz'))
-#         data['x_' + category] = cat_data['x']
-#         data['y_' + category] = cat_data['y']
-#     scaler = StandardScaler(mean=data['x_train'][..., 0].mean(), std=data['x_train'][..., 0].std())
-#     # Data format
-#     for category in ['train', 'val', 'test']:
-#         data['x_' + category][..., 0] = scaler.transform(data['x_' + category][..., 0])
-#
-#     data['train_loader'] = DataLoaderM(data['x_train'], data['y_train'], batch_size, pad_with_last_sample=False)
-#     data['val_loader'] = DataLoaderM(data['x_val'], data['y_val'], valid_batch_size, pad_with_last_sample=False)
-#     data['test_loader'] = DataLoaderM(data['x_test'], data['y_test'], test_batch_size, pad_with_last_sample=False)
-#     data['scaler'] = scaler
-#     return data
+    return data, adj, adj_dtw, config, num_of_vertices
 
 
 def masked_mse(preds, labels, null_val=np.nan):
@@ -427,11 +359,6 @@ def load_node_feature(path):
     return z
 
 
-def normal_std(x):
-    return x.std() * np.sqrt((len(x) - 1.) / (len(x)))
-
-
-
 def load_adj(pkl_filename, adjtype = "doubletransition"):
     sensor_ids, sensor_id_to_ind, adj_mx = load_pickle(pkl_filename)
     if adjtype == "scalap":
@@ -457,118 +384,7 @@ def load_adj_dtw(pkl_filename):
     return asym_adj(adj_dtw)
 
 
-
-
-
-
-
 ###########################################################################################
-
-
-
-
-
-def construct_adj(A, steps):
-
-
-    # print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-    # print(np.sum(A))
-    # print(np.sum(A, axis=0))
-    # print(np.sum(A, axis=1))
-    # print(np.where(A!=np.transpose(A)))
-    # print(A)
-
-    # print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
-    # sys.exit(0)
-
-    '''
-    construct a bigger adjacency matrix using the given matrix
-
-    Parameters
-    ----------
-    A: np.ndarray, adjacency matrix, shape is (N, N)
-
-    steps: how many times of the does the new adj mx bigger than A
-
-    Returns
-    ----------
-    new adjacency matrix: csr_matrix, shape is (N * steps, N * steps)
-    '''
-    N = len(A)
-    adj = np.zeros([N * steps] * 2)
-
-    for i in range(steps):
-        adj[i * N: (i + 1) * N, i * N: (i + 1) * N] = A
-
-    for i in range(N):
-        for k in range(steps - 1):
-            adj[k * N + i, (k + 1) * N + i] = 1
-            adj[(k + 1) * N + i, k * N + i] = 1
-
-    for i in range(len(adj)):
-        adj[i, i] = 1
-
-    return adj
-
-
-def construct_adj_fusion(A, A_dtw, steps, if_causal = False):
-    '''
-    construct a bigger adjacency matrix using the given matrix
-
-    Parameters
-    ----------
-    A: np.ndarray, adjacency matrix, shape is (N, N)
-
-    steps: how many times of the does the new adj mx bigger than A
-
-    Returns
-    ----------
-    new adjacency matrix: csr_matrix, shape is (N * steps, N * steps)
-
-    ----------
-    This is 4N_1 mode:
-
-    [T, 1, 1, T
-     1, S, 1, 1
-     1, 1, S, 1
-     T, 1, 1, T]
-
-    '''
-
-    N = len(A)
-    adj = np.zeros([N * steps] * 2) # "steps" = 4 !!!
-    
-    #'''李府显：次对角线6个单位矩阵
-    for i in range(N):
-        for k in range(steps - 1):
-            adj[k * N + i, (k + 1) * N + i] = 1
-            adj[(k + 1) * N + i, k * N + i] = 1
-    #'''李府显：次次次对角线2个
-    adj[3 * N: 4 * N, 0:  N] = A_dtw #adj[0 * N : 1 * N, 1 * N : 2 * N]
-    adj[0 : N, 3 * N: 4 * N] = A_dtw #adj[0 * N : 1 * N, 1 * N : 2 * N]
-    #李府显：次次对角线4个单位矩阵（）其实等号右侧放次对角线上哪个都行
-    adj[2 * N: 3 * N, 0 : N] = adj[0 * N : 1 * N, 1 * N : 2 * N]
-    adj[0 : N, 2 * N: 3 * N] = adj[0 * N : 1 * N, 1 * N : 2 * N]
-    adj[1 * N: 2 * N, 3 * N: 4 * N] = adj[0 * N : 1 * N, 1 * N : 2 * N]
-    adj[3 * N: 4 * N, 1 * N: 2 * N] = adj[0 * N : 1 * N, 1 * N : 2 * N]
-
-
-    # for i in range(len(adj)): #李府显：对于我们的数据集，有没有这个操作都行
-    #     adj[i, i] = 1
-
-    if if_causal:
-        adj = np.tril(adj, k=0) # https://www.thinbug.com/q/8905501
-
-
-    #李府显：对角线4个
-    for i in range(steps):
-        if (i == 1) or (i == 2):
-            adj[i * N: (i + 1) * N, i * N: (i + 1) * N] = A # A_dtw
-        else:
-            adj[i * N: (i + 1) * N, i * N: (i + 1) * N] = A_dtw
-
-    print(adj)
-    return adj
 
 
 def construct_tg1(A, A_dtw):

@@ -28,16 +28,14 @@ parser.add_argument('--data',
                     type=str,
                     default='data/METR-LA_dim4/',
                     help='data path')
-
+parser.add_argument('--cl',
+                    type=str_to_bool,
+                    default=False,
+                    help='whether to do curriculum learning')
 parser.add_argument('--adj_data',
                     type=str,
                     default='data/METR-LA_dim4/adj_mx.pkl',
                     help='adj data path')
-parser.add_argument('--cl',
-                    type=str_to_bool,
-                    default=True,
-                    help='whether to do curriculum learning')
-
 parser.add_argument('--num_nodes',
                     type=int,
                     default=207,
@@ -182,30 +180,14 @@ bn_decay = 0.1
 num_train = 23974
 lr_decay_steps = args.decay_epoch * num_train // args.batch_size
 
-f = open(args.SE_file, mode='r')
-lines = f.readlines()
-temp = lines[0].split(' ')
-N, dims = int(temp[0]), int(temp[1])
-SE = np.zeros(shape=(N, dims), dtype=np.float32)
-for line in lines[1:]:
-    temp = line.split(' ')
-    index = int(temp[0])
-    SE[index] = temp[1:]
-
 device = torch.device(args.device)
-SE = torch.FloatTensor(SE).to(device)
 
 os.makedirs(args.save, exist_ok=True)
 
 epoch_pretest = args.epoch_pretest.split('_')
-IF_DCRNNcl = args.IF_DCRNNcl
 
-if_causal = False
-dataloader, predefined_A, config, num_nodes = load_dataset(args.data, args.batch_size, args.batch_size,
-                          args.batch_size, if_causal)
-
-adj = predefined_A[num_nodes:2*num_nodes][:, num_nodes:2*num_nodes]
-adj_dtw = predefined_A[:num_nodes][:, :num_nodes]
+dataloader, adj, adj_dtw, config, num_nodes = load_dataset(args.data, args.batch_size, 
+                                                           args.batch_size, args.batch_size)
 scaler = dataloader['scaler']
 
 pre_mask = None
@@ -233,8 +215,7 @@ def main(runid):
 
     torch.backends.cudnn.benchmark = True
 
-    model = Net(SE,
-                T,
+    model = Net(T,
                 bn_decay,
                 args.gcn_depth,
                 num_nodes,
@@ -244,9 +225,7 @@ def main(runid):
                 num_of_hop=args.gcn_depth,
                 use_mask = True,
                 dropout=args.dropout,
-                subgraph_size=args.subgraph_size,
                 node_dim=args.node_dim,
-                dilation_exponential=args.dilation_exponential,
                 conv_channels=args.conv_channels,
                 residual_channels=args.residual_channels,
                 skip_channels=args.skip_channels,
@@ -264,7 +243,7 @@ def main(runid):
 
     engine = Trainer(model, args.learning_rate, args.weight_decay, args.clip,
                      args.step_size1, args.seq_out_len, scaler, device,
-                     args.cl, args.new_training_method, lr_decay_steps,
+                     args.new_training_method, lr_decay_steps,
                      args.lr_decay_rate, max_value)
     if args.LOAD_INITIAL:
         pretrained_dict=torch.load(args.save + "exp" + str(args.loadid) + "_" + str(runid) + ".pth", map_location='cpu')
@@ -280,15 +259,14 @@ def main(runid):
         realy = torch.Tensor(dataloader['y_test']).to(device)
         realy = realy.transpose(1, 3)[:, 0, :, :]
 
-        for iter, (x,
-                   y) in enumerate(dataloader['test_loader'].get_iterator()):
+        for iter, (x, y) in enumerate(dataloader['test_loader'].get_iterator()):
             testx = torch.Tensor(x).to(device)
             testx = testx.transpose(1, 3)
             testy = torch.Tensor(y).to(device)
             testy = testy.transpose(1, 3)
             with torch.no_grad():
                 engine.model.eval()
-                preds = engine.model(testx, ycl=testy)
+                preds = engine.model(testx)
                 preds = preds.transpose(1, 3)
             outputs.append(preds.squeeze(dim=1))
 
@@ -340,21 +318,14 @@ def main(runid):
             train_rmse = []
             t1 = time.time()
             dataloader['train_loader'].shuffle()
-            for iter, (x, y, ycl) in enumerate(dataloader['train_loader'].get_iterator()):
+            for iter, (x, y) in enumerate(dataloader['train_loader'].get_iterator()):
                 batches_seen += 1
                 trainx = torch.Tensor(x).to(device)
                 trainx = trainx.transpose(1, 3)
                 trainy = torch.Tensor(y).to(device)
                 trainy = trainy.transpose(1, 3)
 
-                trainycl = torch.Tensor(ycl).to(device)
-                trainycl = trainycl.transpose(1, 3)
-
-                metrics = engine.train_weight(trainx,
-                                       trainy[:, 0, :, :],
-                                       trainycl,
-                                       #idx=None,
-                                       batches_seen=batches_seen)
+                metrics = engine.train_weight(trainx, trainy[:, 0, :, :])
                 train_loss.append(metrics[0])
                 train_mape.append(metrics[1])
                 train_rmse.append(metrics[2])
@@ -374,9 +345,7 @@ def main(runid):
                 valx = valx.transpose(1, 3)
                 valy = torch.Tensor(y).to(device)
                 valy = valy.transpose(1, 3)
-                
-                # metrics = engine.train_arch(valx, valy[:, 0, :, :], valy)
-                metrics = engine.eval(valx, valy[:, 0, :, :], valy)
+                metrics = engine.eval(valx, valy[:, 0, :, :])
                 valid_loss.append(metrics[0])
                 valid_mape.append(metrics[1])
                 valid_rmse.append(metrics[2])
@@ -434,7 +403,7 @@ def main(runid):
                     testy = torch.Tensor(y).to(device)
                     testy = testy.transpose(1, 3)
                     with torch.no_grad():
-                        preds = engine.model(testx, ycl=testy)
+                        preds = engine.model(testx)
                         preds = preds.transpose(1, 3)
                     outputs.append(preds.squeeze(dim=1))
 
@@ -470,7 +439,7 @@ def main(runid):
                     testy = torch.Tensor(y).to(device)
                     testy = testy.transpose(1, 3)
                     with torch.no_grad():
-                        preds = engine.model(testx, ycl=testy)
+                        preds = engine.model(testx)
                         preds = preds.transpose(1, 3)
                     outputs.append(preds.squeeze(dim=1))
 
@@ -512,7 +481,7 @@ def main(runid):
             testy = torch.Tensor(y).to(device)
             testy = testy.transpose(1, 3)
             with torch.no_grad():
-                preds = engine.model(testx, ycl=testy)
+                preds = engine.model(testx)
                 preds = preds.transpose(1, 3)
             outputs.append(preds.squeeze(dim=1))
 
@@ -533,7 +502,7 @@ def main(runid):
             testy = torch.Tensor(y).to(device)
             testy = testy.transpose(1, 3)
             with torch.no_grad():
-                preds = engine.model(testx, ycl=testy)
+                preds = engine.model(testx)
                 preds = preds.transpose(1, 3)
             outputs.append(preds.squeeze(dim=1))
 

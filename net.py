@@ -81,53 +81,13 @@ class FullyConnected(nn.Module):
         return X
 
 
-class SpatioTemporalEmbedding(nn.Module):
-    def __init__(self,
-                 D_SE: int,
-                 D: int,
-                 bn_decay: float,
-                 steps_per_day: int,
-                 use_bias: bool = True):
-        super(SpatioTemporalEmbedding, self).__init__()
-        self._fully_connected_se = FullyConnected(input_dims=[D_SE, D],
-                                                  units=[D, D],
-                                                  activations=[F.relu, None],
-                                                  bn_decay=bn_decay,
-                                                  use_bias=use_bias)
-
-        self._fully_connected_te = FullyConnected(
-            input_dims=[steps_per_day + 7, D],
-            units=[D, D],
-            activations=[F.relu, None],
-            bn_decay=bn_decay,
-            use_bias=use_bias)
-
-        self.steps_per_day = steps_per_day
-
-    def forward(self, SE: torch.FloatTensor, TE: torch.FloatTensor,
-                T: int) -> torch.FloatTensor:
-
-        SE = self._fully_connected_se(SE)
-
-        timeofday = torch.nn.functional.one_hot(TE[:, :1, :].to(torch.int64),
-                                                num_classes=self.steps_per_day)
-        dayofweek = torch.nn.functional.one_hot(TE[:, 1:, :].to(torch.int64),
-                                                num_classes=7)
-
-        TE = torch.cat((dayofweek, timeofday), dim=-1)
-
-        TE = self._fully_connected_te(TE.transpose(1, 3).float())
-        del dayofweek, timeofday
-        return SE + TE
-
-
 class position_embedding(nn.Module):
     def __init__(self,
-                 input_length,
-                 num_of_vertices,
-                 embedding_size,
-                 temporal=True,
-                 spatial=True):
+                  input_length,
+                  num_of_vertices,
+                  embedding_size,
+                  temporal=True,
+                  spatial=True):
         super(position_embedding, self).__init__()
         '''
         Parameters
@@ -158,7 +118,7 @@ class position_embedding(nn.Module):
 
             self.temporal_emb = nn.Parameter(torch.randn(
                 1, embedding_size, input_length, 1),
-                                             requires_grad=True)
+                                              requires_grad=True)
 
             nn.init.xavier_uniform_(self.temporal_emb,
                                     gain=math.sqrt(0.0003 / 6))
@@ -375,7 +335,6 @@ class mask_operation(nn.Module):
         
 class Net(nn.Module):
     def __init__(self,
-                 SE,
                  steps_per_day: int,
                  bn_decay: float,
                  gcn_depth,
@@ -407,18 +366,11 @@ class Net(nn.Module):
         # tcn_channels = residual_channels
 
         D = residual_channels
-        dim_STE = residual_channels
-
-        dim_SE = SE.shape[-1]
-        self.SE = SE.transpose(0, 1).unsqueeze(0).unsqueeze(-2)
-        del SE
 
         filter_list = np.full((layers, gcn_depth), D, dtype=int)
         print('filter_list:', filter_list)
         first_layer_embedding_size = D
         self._steps_per_day = steps_per_day
-        self._st_embedding = SpatioTemporalEmbedding(dim_SE, dim_STE, bn_decay,
-                                                     steps_per_day)
 
         self._fully_connected_1 = FullyConnected(input_dims=[in_dim, D],
                                                  units=[D, D],
@@ -445,12 +397,6 @@ class Net(nn.Module):
         self.adj_first_list = pre_adj_first
         self.adj_second_list = pre_adj_second
         self.mask = mask_operation(2, num_of_vertices, 16)
-
-        use_STE = False
-        if use_STE:
-            num_of_features = first_layer_embedding_size + dim_STE
-        else:
-            num_of_features = first_layer_embedding_size
 
         self.start_conv = nn.Conv2d(in_channels=in_dim,
                                     out_channels=first_layer_embedding_size,
@@ -528,8 +474,6 @@ class Net(nn.Module):
 
     def forward(self,
                 input,
-                ycl=None,
-                batches_seen=None,
                 task_level=12,
                 mode=Mode.ONE_PATH_FIXED):
 
@@ -540,7 +484,7 @@ class Net(nn.Module):
         del input
 
         in_len = X.size(2)
-        assert in_len == self.P, 'input sequence length not equal to preset sequence length'
+        # assert in_len == self.P, 'input sequence length not equal to preset sequence length'
         if in_len < self.receptive_field:
 
             X = nn.functional.pad(X, (0, 0, self.receptive_field - in_len, 0))

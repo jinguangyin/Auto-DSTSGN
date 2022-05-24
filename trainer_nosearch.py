@@ -6,7 +6,7 @@ from mode import Mode
 
 class Trainer():
     def __init__(self, model, lrate, wdecay, clip, step_size, seq_out_len, scaler, 
-                 device, cl=True, new_training_method = False, lr_decay_steps = None, 
+                 device, new_training_method = False, lr_decay_steps = None, 
                  lr_decay_rate = 0.97, max_value = None):
         self.scaler = scaler
         self.model = model
@@ -20,7 +20,6 @@ class Trainer():
         self.iter = 0
         self.task_level = 1
         self.seq_out_len = seq_out_len
-        self.cl = cl
         self.new_training_method = new_training_method
         self.max_value = max_value
 
@@ -28,7 +27,7 @@ class Trainer():
         self.arch_scheduler = optim.lr_scheduler.LambdaLR(self.arch_optimizer, lr_lambda=lambda epoch: lr_decay_rate ** epoch)
 
 
-    def train_weight(self, input, real_val, ycl, batches_seen = None, mode = Mode.TWO_PATHS):
+    def train_weight(self, input, real_val, mode = Mode.TWO_PATHS):
         self.iter += 1  
 
         if self.iter%self.step==0 and self.task_level<self.seq_out_len:  
@@ -38,24 +37,15 @@ class Trainer():
 
         self.model.train()
         self.weight_optimizer.zero_grad()
-        if self.cl:
-            output = self.model(input, ycl = ycl, batches_seen = self.iter, task_level = self.task_level, mode = Mode.ONE_PATH_FIXED)
-        else:
-            output = self.model(input, ycl = ycl, batches_seen = self.iter, task_level = self.seq_out_len, mode = Mode.ONE_PATH_FIXED)
+        output = self.model(input, task_level = self.seq_out_len, mode = Mode.ONE_PATH_FIXED)
 
         output = output.transpose(1,3)
         real = torch.unsqueeze(real_val,dim=1)
         predict = self.scaler.inverse_transform(output)
 
-        if self.cl:
-
-            loss = self.loss(predict[:, :, :, :self.task_level], real[:, :, :, :self.task_level], 0.0)
-            mape = util.masked_mape(predict[:, :, :, :self.task_level], real[:, :, :, :self.task_level], 0.0).item()
-            rmse = util.masked_rmse(predict[:, :, :, :self.task_level], real[:, :, :, :self.task_level], 0.0).item()
-        else:
-            loss = self.loss(predict, real, 0.0)
-            mape = util.masked_mape(predict, real, 0.0).item()
-            rmse = util.masked_rmse(predict, real, 0.0).item()
+        loss = self.loss(predict, real, 0.0)
+        mape = util.masked_mape(predict, real, 0.0).item()
+        rmse = util.masked_rmse(predict, real, 0.0).item()
 
         loss.backward(retain_graph=False)
 
@@ -64,14 +54,13 @@ class Trainer():
 
         self.weight_optimizer.step()
          
-
         return loss.item(),mape,rmse
     
-    def train_arch(self, input, real_val, ycl, mode = Mode.TWO_PATHS):
+    def train_arch(self, input, real_val, mode = Mode.TWO_PATHS):
         self.model.eval()
         self.arch_optimizer.zero_grad()
 
-        output = self.model(input, ycl = ycl, mode = Mode.TWO_PATHS)
+        output = self.model(input, mode = Mode.TWO_PATHS)
         output = output.transpose(1,3)
         real = torch.unsqueeze(real_val,dim=1)
         predict = self.scaler.inverse_transform(output)
@@ -89,10 +78,10 @@ class Trainer():
          
         return loss.item(),mape,rmse    
 
-    def eval(self, input, real_val, ycl, mode = Mode.ONE_PATH_FIXED):
+    def eval(self, input, real_val, mode = Mode.ONE_PATH_FIXED):
         self.model.eval()
         with torch.no_grad():
-            output = self.model(input, ycl = ycl, mode = Mode.ONE_PATH_FIXED)
+            output = self.model(input, mode = Mode.ONE_PATH_FIXED)
         output = output.transpose(1,3)
         real = torch.unsqueeze(real_val,dim=1)
         predict = self.scaler.inverse_transform(output)
