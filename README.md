@@ -7,3 +7,10 @@ We propose an automated dilated spatio-temporal synchronous graph network, named
 - numpy == 1.19.4
 - pandas == 1.1.1
 - torch >= 1.5
+
+## Usage
+Commands for training model:
+
+```bash
+python train_benchmark.py --model 'model_name' --data 'data_name' >> log.txt 
+```
