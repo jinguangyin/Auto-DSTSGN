@@ -9,8 +9,9 @@ We propose an automated dilated spatio-temporal synchronous graph network, named
 - torch >= 1.5
 
 ## Usage
-Commands for training model:
+Commands for training model in two phases:
 
+- Searching phase:
 ```bash
-python train_benchmark.py --model 'model_name' --data 'data_name' >> log.txt 
+python train_multi_step.py  --data /data_path/individual_3layer_12T.json --runs 5  --epochs 60  --print_every 5 --batch_size 64 --tolerance 15   --node_dim 40   --step_size1 2500 --skip_channels 40 --residual_channels 40  --sts_kernal_size 2 --expid _pems08 --forcp 0 --device cuda:0 --in_dim 1 --max_value 10000
 ```
