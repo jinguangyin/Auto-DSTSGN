@@ -4,5 +4,7 @@ We propose an automated dilated spatio-temporal synchronous graph network, named
 
 # Requirements
 Python 3.6
+
 numpy == 1.19.4
+
 torch >= 1.5
