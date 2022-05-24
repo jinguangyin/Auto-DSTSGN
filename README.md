@@ -13,5 +13,9 @@ Commands for training model in two phases:
 
 - Searching phase:
 ```bash
-python train_multi_step.py  --data /data_path/individual_3layer_12T.json --runs 5  --epochs 60  --print_every 5 --batch_size 64 --tolerance 15   --node_dim 40   --step_size1 2500 --skip_channels 40 --residual_channels 40  --sts_kernal_size 2 --expid _pems08 --forcp 0 --device cuda:0 --in_dim 1 --max_value 10000
+python train_multi_step.py  --data /data/individual_3layer_12T.json --runs 5 --epochs 60  --print_every 5 --batch_size 64 --tolerance 15   --node_dim 40   --step_size1 2500 --skip_channels 40 --residual_channels 40  --sts_kernal_size 2 --expid _pems08 --forcp 0 --device cuda:0 --in_dim 1 --max_value 10000
+```
+- Training phase:
+```bash
+python train_multi_step_nosearch.py  --data  /data/individual_3layer_12T.json  --runs 5  --epochs 200  --print_every 10 --batch_size 64 --tolerance 30  --node_dim 40  --step_size1 2500 --skip_channels 40 --residual_channels 40  --sts_kernal_size 2 --expid _pems08 --forcp 0 --device cuda:0 --loadid _pems08 --epoch_pretest 10 --LOAD_INITIAL True --in_dim 1 --max_value 10000
 ```
